@@ -2,8 +2,12 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// التأكد من وجود مجلد uploads
-const uploadDir = 'uploads/';
+// تحديد مسار المجلد بناءً على البيئة (مؤقت في Vercel ومحلي في جهازك)
+const uploadDir = process.env.NODE_ENV === 'production' ?
+    '/tmp/uploads' :
+    path.join(__dirname, '../uploads');
+
+// إنشاء المجلد إذا لم يكن موجوداً
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
