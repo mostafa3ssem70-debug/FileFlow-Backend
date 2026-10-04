@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const {
     uploadFile,
+    updateFile,
     getFiles,
     downloadFile,
     deleteFile,
@@ -12,6 +13,7 @@ const upload = require('../middleware/uploadMiddleware');
 
 router.post('/upload', protect, upload.single('file'), uploadFile);
 router.get('/', protect, getFiles);
+router.put('/:id', protect, adminOnly, updateFile);
 router.get('/view/:id', protect, viewFile);
 router.get('/download/:id', protect, downloadFile);
 router.delete('/:id', protect, adminOnly, deleteFile);

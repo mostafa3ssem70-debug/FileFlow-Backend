@@ -7,8 +7,7 @@ const path = require('path');
 const canAccessFile = (file, user) => {
     if (user.role === 'admin') return true;
     const departments = file.departments && file.departments.length ?
-        file.departments :
-        [file.department];
+        file.departments : [file.department];
     if (!departments.includes(user.department)) return false;
     if (file.accessMode !== 'users') return true;
     return (file.sharedWith || []).some((userId) => String(userId) === String(user._id));
@@ -117,13 +116,100 @@ exports.uploadFile = async(req, res) => {
     }
 };
 
+// @desc    Update file departments and sharing settings (Admin Only)
+// @route   PUT /api/files/:id
+exports.updateFile = async(req, res) => {
+    try {
+        const file = await File.findById(req.params.id);
+        if (!file) {
+            return res.status(404).json({ message: 'الملف غير موجود' });
+        }
+
+        let departments = req.body.departments;
+        if (departments === undefined && req.body.department !== undefined) {
+            departments = [req.body.department];
+        } else if (departments === undefined) {
+            departments = file.departments && file.departments.length ?
+                file.departments :
+                [file.department];
+        } else if (typeof departments === 'string') {
+            try {
+                departments = JSON.parse(departments);
+            } catch {
+                return res.status(400).json({ message: 'قائمة الأقسام المحددة غير صالحة' });
+            }
+        }
+
+        if (!Array.isArray(departments)) {
+            return res.status(400).json({ message: 'قائمة الأقسام المحددة غير صالحة' });
+        }
+
+        departments = [...new Set(departments.map((department) => String(department).trim()))];
+        if (departments.length === 0 || departments.some((department) => !department)) {
+            return res.status(400).json({ message: 'اختر قسماً واحداً على الأقل للملف' });
+        }
+
+        const accessMode = req.body.accessMode === undefined ?
+            file.accessMode :
+            req.body.accessMode;
+        if (!['department', 'users'].includes(accessMode)) {
+            return res.status(400).json({ message: 'نطاق مشاركة غير صالح' });
+        }
+
+        let sharedWith = [];
+        if (accessMode === 'users') {
+            sharedWith = req.body.sharedWith === undefined ?
+                (file.sharedWith || []).map(String) :
+                req.body.sharedWith;
+
+            if (typeof sharedWith === 'string') {
+                try {
+                    sharedWith = JSON.parse(sharedWith);
+                } catch {
+                    return res.status(400).json({ message: 'قائمة الحسابات المحددة غير صالحة' });
+                }
+            }
+
+            if (!Array.isArray(sharedWith) || sharedWith.length === 0) {
+                return res.status(400).json({ message: 'اختر حساباً واحداً على الأقل لعرض الملف' });
+            }
+
+            sharedWith = [...new Set(sharedWith.map(String))];
+            if (sharedWith.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
+                return res.status(400).json({ message: 'أحد الحسابات المحددة غير صالح' });
+            }
+
+            const matchedUsers = await User.find({
+                _id: { $in: sharedWith },
+                department: { $in: departments },
+                role: 'employee',
+            }).select('_id');
+
+            if (matchedUsers.length !== sharedWith.length) {
+                return res.status(400).json({
+                    message: 'يجب اختيار حسابات موظفين من الأقسام المحددة فقط',
+                });
+            }
+        }
+
+        file.departments = departments;
+        file.department = departments[0];
+        file.accessMode = accessMode;
+        file.sharedWith = accessMode === 'users' ? sharedWith : [];
+
+        await file.save();
+        res.json(file);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // @desc    Get all files
 // @route   GET /api/files
 exports.getFiles = async(req, res) => {
     try {
         const query = req.user.role === 'admin' ? {} : {
-            $and: [
-                {
+            $and: [{
                     $or: [
                         { departments: req.user.department },
                         { department: req.user.department },
