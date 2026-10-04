@@ -1,5 +1,6 @@
 ﻿const File = require('../models/File');
 const User = require('../models/User');
+const DownloadLog = require('../models/DownloadLog');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
@@ -333,6 +334,43 @@ exports.getFiles = async(req, res) => {
     }
 };
 
+// @route   GET /api/files/download-stats
+exports.getDownloadStats = async(req, res) => {
+    try {
+        const [users, downloadLogs] = await Promise.all([
+            User.find()
+                .select('_id name username department role')
+                .sort({ name: 1 })
+                .lean(),
+            DownloadLog.find()
+                .sort({ downloadedAt: -1 })
+                .lean(),
+        ]);
+
+        const userStats = new Map(users.map((user) => [
+            String(user._id),
+            { ...user, downloadCount: 0, downloads: [] },
+        ]));
+
+        for (const log of downloadLogs) {
+            const stats = userStats.get(String(log.employee));
+            if (!stats) continue;
+
+            stats.downloadCount += 1;
+            stats.downloads.push({
+                _id: log._id,
+                fileName: log.fileName,
+                department: log.department,
+                downloadedAt: log.downloadedAt,
+            });
+        }
+
+        res.json([...userStats.values()]);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // @desc    Download file
 // @route   GET /api/files/download/:id
 exports.downloadFile = async(req, res) => {
@@ -351,6 +389,19 @@ exports.downloadFile = async(req, res) => {
             return res.status(404).json({
                 message: 'محتوى الملف غير موجود في التخزين. قد يكون الملف مرفوعاً قبل تفعيل التخزين الدائم.',
             });
+        }
+
+        if (req.user.role === 'employee') {
+            try {
+                await DownloadLog.create({
+                    employee: req.user._id,
+                    file: file._id,
+                    fileName: file.originalName,
+                    department: req.user.department || 'General',
+                });
+            } catch (logError) {
+                console.error('Failed to record a successful employee file download:', logError);
+            }
         }
     } catch (error) {
         if (res.headersSent) {

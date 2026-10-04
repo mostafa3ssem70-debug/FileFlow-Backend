@@ -4,6 +4,7 @@ const {
     uploadFile,
     updateFile,
     getFiles,
+    getDownloadStats,
     downloadFile,
     deleteFile,
     viewFile, // <-- إضافة الدالة هنا
@@ -13,6 +14,7 @@ const upload = require('../middleware/uploadMiddleware');
 
 router.post('/upload', protect, upload.single('file'), uploadFile);
 router.get('/', protect, getFiles);
+router.get('/download-stats', protect, adminOnly, getDownloadStats);
 router.put('/:id', protect, adminOnly, updateFile);
 router.get('/view/:id', protect, viewFile);
 router.get('/download/:id', protect, downloadFile);
