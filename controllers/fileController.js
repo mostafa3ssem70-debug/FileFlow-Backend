@@ -371,6 +371,23 @@ exports.getDownloadStats = async(req, res) => {
     }
 };
 
+// @route   DELETE /api/files/download-stats/:userId
+exports.deleteUserDownloadStats = async(req, res) => {
+    try {
+        if (!mongoose.isValidObjectId(req.params.userId)) {
+            return res.status(400).json({ message: 'معرّف الحساب غير صالح' });
+        }
+
+        const result = await DownloadLog.deleteMany({ employee: req.params.userId });
+        res.json({
+            message: 'تم حذف سجل التنزيلات للحساب بنجاح',
+            deletedCount: result.deletedCount,
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // @desc    Download file
 // @route   GET /api/files/download/:id
 exports.downloadFile = async(req, res) => {
