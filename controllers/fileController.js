@@ -20,7 +20,7 @@ const rejectUpload = (req, res, status, message) => {
 
 // @desc    Upload new file
 // @route   POST /api/files/upload
-exports.uploadFile = async (req, res) => {
+exports.uploadFile = async(req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ message: 'يرجى اختيار ملف لرفعه' });
@@ -93,20 +93,25 @@ exports.uploadFile = async (req, res) => {
 
 // @desc    Get all files
 // @route   GET /api/files
-exports.getFiles = async (req, res) => {
+exports.getFiles = async(req, res) => {
     try {
-        const query = req.user.role === 'admin'
-            ? {}
-            : {
-                department: req.user.department,
+        const query = req.user.role === 'admin' ? {} : {
+            // البحث عما إذا كان قسم المستخدم موجوداً داخل مصفوفة departments الخاصة بالملف
+            $or: [
+                { departments: req.user.department },
+                { department: req.user.department } // لدعم البيانات القديمة إن وُجدت
+            ],
+            $and: [{
                 $or: [
                     { accessMode: { $ne: 'users' } },
                     { sharedWith: req.user._id },
-                ],
-            };
+                ]
+            }]
+        };
 
         const files = await File.find(query)
             .populate('uploadedBy', 'name username')
+            .populate('departments', 'name') // لجلب أسماء الأقسام المتعددة مباشرة من قاعدة البيانات
             .sort({ createdAt: -1 });
 
         res.json(files);
@@ -117,7 +122,7 @@ exports.getFiles = async (req, res) => {
 
 // @desc    Download file
 // @route   GET /api/files/download/:id
-exports.downloadFile = async (req, res) => {
+exports.downloadFile = async(req, res) => {
     try {
         const file = await File.findById(req.params.id);
 
@@ -137,7 +142,7 @@ exports.downloadFile = async (req, res) => {
 
 // @desc    Delete file (Admin Only)
 // @route   DELETE /api/files/:id
-exports.deleteFile = async (req, res) => {
+exports.deleteFile = async(req, res) => {
     try {
         const file = await File.findById(req.params.id);
 
@@ -157,7 +162,7 @@ exports.deleteFile = async (req, res) => {
 };
 
 // دالة عرض الملف داخل المتصفح (Inline Preview)
-exports.viewFile = async (req, res) => {
+exports.viewFile = async(req, res) => {
     try {
         const file = await File.findById(req.params.id);
         if (!file) {
@@ -188,9 +193,9 @@ exports.viewFile = async (req, res) => {
             '.json': 'application/json; charset=utf-8',
         };
 
-        const contentType = file.mimeType && file.mimeType !== 'application/octet-stream'
-            ? file.mimeType
-            : mimeMap[extension] || 'application/octet-stream';
+        const contentType = file.mimeType && file.mimeType !== 'application/octet-stream' ?
+            file.mimeType :
+            mimeMap[extension] || 'application/octet-stream';
 
         res.setHeader('Content-Type', contentType);
         res.setHeader(
