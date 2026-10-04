@@ -3,6 +3,10 @@ const User = require('../models/User');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
+const { Readable } = require('stream');
+const { del, get, put } = require('@vercel/blob');
+const { pipeline } = require('stream/promises');
 
 const canAccessFile = (file, user) => {
     if (user.role === 'admin') return true;
@@ -14,15 +18,81 @@ const canAccessFile = (file, user) => {
 };
 
 const rejectUpload = (req, res, status, message) => {
-    if (req.file && fs.existsSync(req.file.path)) {
+    if (req.file?.path && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
     }
     return res.status(status).json({ message });
 };
 
+const setFileResponseHeaders = (res, file, disposition, contentType, fileSize) => {
+    const safeFileName = String(file.originalName || 'file').replace(/["\\/\r\n]/g, '_');
+    const asciiFileName = safeFileName.replace(/[^\x20-\x7E]/g, '_');
+    const encodedFileName = encodeURIComponent(safeFileName).replace(/['()*]/g, (character) => (
+        `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+    ));
+
+    res.setHeader('Content-Type', contentType || 'application/octet-stream');
+    res.setHeader(
+        'Content-Disposition',
+        `${disposition}; filename="${asciiFileName}"; filename*=UTF-8''${encodedFileName}`,
+    );
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    if (Number.isFinite(fileSize)) {
+        res.setHeader('Content-Length', String(fileSize));
+    }
+};
+
+const getFileContentType = (file) => {
+    if (file.mimeType && file.mimeType !== 'application/octet-stream') {
+        return file.mimeType;
+    }
+
+    const mimeMap = {
+        '.pdf': 'application/pdf',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.svg': 'image/svg+xml',
+        '.txt': 'text/plain; charset=utf-8',
+        '.csv': 'text/csv; charset=utf-8',
+        '.html': 'text/html; charset=utf-8',
+        '.json': 'application/json; charset=utf-8',
+    };
+
+    return mimeMap[path.extname(file.originalName || '').toLowerCase()] || 'application/octet-stream';
+};
+
+const sendStoredFile = async(file, res, disposition) => {
+    if (file.storageType === 'vercelBlob') {
+        const blob = await get(file.filePath, { access: 'private' });
+        if (!blob || blob.statusCode !== 200) return false;
+
+        setFileResponseHeaders(
+            res,
+            file,
+            disposition,
+            blob.blob.contentType || getFileContentType(file),
+            blob.blob.size,
+        );
+        await pipeline(Readable.fromWeb(blob.stream), res);
+        return true;
+    }
+
+    const filePath = path.resolve(file.filePath);
+    if (!fs.existsSync(filePath)) return false;
+
+    setFileResponseHeaders(res, file, disposition, getFileContentType(file), file.fileSize);
+    await pipeline(fs.createReadStream(filePath), res);
+    return true;
+};
+
 // @desc    Upload new file
 // @route   POST /api/files/upload
 exports.uploadFile = async(req, res) => {
+    let blobPath;
     try {
         if (!req.file) {
             return res.status(400).json({ message: 'يرجى اختيار ملف لرفعه' });
@@ -94,10 +164,32 @@ exports.uploadFile = async(req, res) => {
             }
         }
 
+        let filePath;
+        let storageType = 'local';
+        let fileName = req.file.filename;
+        if (process.env.NODE_ENV === 'production') {
+            if (!req.file.buffer) {
+                return res.status(500).json({ message: 'تعذر تجهيز الملف للتخزين الدائم' });
+            }
+
+            const safeName = path.basename(req.file.originalname).replace(/[\\/\r\n]/g, '_');
+            blobPath = `uploads/${randomUUID()}-${safeName}`;
+            const blob = await put(blobPath, req.file.buffer, {
+                access: 'private',
+                contentType: req.file.mimetype,
+            });
+            filePath = blob.pathname;
+            fileName = blob.pathname;
+            storageType = 'vercelBlob';
+        } else {
+            filePath = req.file.path;
+        }
+
         const file = await File.create({
             originalName: req.file.originalname,
-            fileName: req.file.filename,
-            filePath: req.file.path,
+            fileName,
+            filePath,
+            storageType,
             fileSize: req.file.size,
             mimeType: req.file.mimetype,
             uploadedBy: req.user._id,
@@ -109,7 +201,14 @@ exports.uploadFile = async(req, res) => {
 
         res.status(201).json(file);
     } catch (error) {
-        if (req.file && fs.existsSync(req.file.path)) {
+        if (blobPath) {
+            try {
+                await del(blobPath, { access: 'private' });
+            } catch (cleanupError) {
+                console.error('Failed to remove uploaded blob after upload failure:', cleanupError);
+            }
+        }
+        if (req.file?.path && fs.existsSync(req.file.path)) {
             fs.unlinkSync(req.file.path);
         }
         res.status(500).json({ message: error.message });
@@ -247,10 +346,18 @@ exports.downloadFile = async(req, res) => {
             return res.status(404).json({ message: 'الملف غير موجود' });
         }
 
-        const filePath = path.resolve(file.filePath);
-        res.download(filePath, file.originalName);
+        const sent = await sendStoredFile(file, res, 'attachment');
+        if (!sent) {
+            return res.status(404).json({
+                message: 'محتوى الملف غير موجود في التخزين. قد يكون الملف مرفوعاً قبل تفعيل التخزين الدائم.',
+            });
+        }
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        if (res.headersSent) {
+            res.destroy(error);
+        } else {
+            res.status(500).json({ message: error.message });
+        }
     }
 };
 
@@ -264,7 +371,9 @@ exports.deleteFile = async(req, res) => {
             return res.status(404).json({ message: 'الملف غير موجود' });
         }
 
-        if (fs.existsSync(file.filePath)) {
+        if (file.storageType === 'vercelBlob') {
+            await del(file.filePath, { access: 'private' });
+        } else if (fs.existsSync(file.filePath)) {
             fs.unlinkSync(file.filePath);
         }
 
@@ -286,41 +395,17 @@ exports.viewFile = async(req, res) => {
             return res.status(404).json({ message: 'الملف غير موجود' });
         }
 
-        const absolutePath = path.resolve(file.filePath);
-        const safeFileName = String(file.originalName || 'file').replace(/["\\\r\n]/g, '_');
-        const asciiFileName = safeFileName.replace(/[^\x20-\x7E]/g, '_');
-        const encodedFileName = encodeURIComponent(safeFileName).replace(/['()*]/g, (character) => (
-            `%${character.charCodeAt(0).toString(16).toUpperCase()}`
-        ));
-        const extension = path.extname(safeFileName).toLowerCase();
-        const mimeMap = {
-            '.pdf': 'application/pdf',
-            '.png': 'image/png',
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.gif': 'image/gif',
-            '.webp': 'image/webp',
-            '.svg': 'image/svg+xml',
-            '.txt': 'text/plain; charset=utf-8',
-            '.csv': 'text/csv; charset=utf-8',
-            '.html': 'text/html; charset=utf-8',
-            '.json': 'application/json; charset=utf-8',
-        };
-
-        const contentType = file.mimeType && file.mimeType !== 'application/octet-stream' ?
-            file.mimeType :
-            mimeMap[extension] || 'application/octet-stream';
-
-        res.setHeader('Content-Type', contentType);
-        res.setHeader(
-            'Content-Disposition',
-            `inline; filename="${asciiFileName}"; filename*=UTF-8''${encodedFileName}`,
-        );
-        res.setHeader('X-Content-Type-Options', 'nosniff');
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-
-        res.sendFile(absolutePath);
+        const sent = await sendStoredFile(file, res, 'inline');
+        if (!sent) {
+            return res.status(404).json({
+                message: 'محتوى الملف غير موجود في التخزين. قد يكون الملف مرفوعاً قبل تفعيل التخزين الدائم.',
+            });
+        }
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        if (res.headersSent) {
+            res.destroy(error);
+        } else {
+            res.status(500).json({ message: error.message });
+        }
     }
 };

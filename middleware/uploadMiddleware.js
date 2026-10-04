@@ -2,24 +2,24 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// تحديد مسار المجلد بناءً على البيئة (مؤقت في Vercel ومحلي في جهازك)
-const uploadDir = process.env.NODE_ENV === 'production' ?
-    '/tmp/uploads' :
-    path.join(__dirname, '../uploads');
+let storage;
+if (process.env.NODE_ENV === 'production') {
+    storage = multer.memoryStorage();
+} else {
+    const uploadDir = path.join(__dirname, '../uploads');
+    if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+    }
 
-// إنشاء المجلد إذا لم يكن موجوداً
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+    storage = multer.diskStorage({
+        destination: (req, file, cb) => {
+            cb(null, uploadDir);
+        },
+        filename: (req, file, cb) => {
+            cb(null, `${Date.now()}-${file.originalname}`);
+        },
+    });
 }
-
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, `${Date.now()}-${file.originalname}`);
-    },
-});
 
 const upload = multer({
     storage,

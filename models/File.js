@@ -13,6 +13,11 @@ const fileSchema = new mongoose.Schema({
         type: String,
         required: true,
     },
+    storageType: {
+        type: String,
+        enum: ['local', 'vercelBlob'],
+        default: 'local',
+    },
     fileSize: {
         type: Number,
         required: true,
