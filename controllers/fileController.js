@@ -96,22 +96,15 @@ exports.uploadFile = async(req, res) => {
 exports.getFiles = async(req, res) => {
     try {
         const query = req.user.role === 'admin' ? {} : {
-            // البحث عما إذا كان قسم المستخدم موجوداً داخل مصفوفة departments الخاصة بالملف
+            department: req.user.department,
             $or: [
-                { departments: req.user.department },
-                { department: req.user.department } // لدعم البيانات القديمة إن وُجدت
+                { accessMode: { $ne: 'users' } },
+                { sharedWith: req.user._id },
             ],
-            $and: [{
-                $or: [
-                    { accessMode: { $ne: 'users' } },
-                    { sharedWith: req.user._id },
-                ]
-            }]
         };
 
         const files = await File.find(query)
             .populate('uploadedBy', 'name username')
-            .populate('departments', 'name') // لجلب أسماء الأقسام المتعددة مباشرة من قاعدة البيانات
             .sort({ createdAt: -1 });
 
         res.json(files);
