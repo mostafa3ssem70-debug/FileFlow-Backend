@@ -30,6 +30,9 @@ const fileSchema = new mongoose.Schema({
         type: String,
         default: 'General',
     },
+    departments: [{
+        type: String,
+    }],
     accessMode: {
         type: String,
         enum: ['department', 'users'],

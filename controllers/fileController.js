@@ -6,7 +6,10 @@ const path = require('path');
 
 const canAccessFile = (file, user) => {
     if (user.role === 'admin') return true;
-    if (file.department !== user.department) return false;
+    const departments = file.departments && file.departments.length ?
+        file.departments :
+        [file.department];
+    if (!departments.includes(user.department)) return false;
     if (file.accessMode !== 'users') return true;
     return (file.sharedWith || []).some((userId) => String(userId) === String(user._id));
 };
@@ -26,11 +29,33 @@ exports.uploadFile = async(req, res) => {
             return res.status(400).json({ message: 'يرجى اختيار ملف لرفعه' });
         }
 
-        const department = req.body.department || req.user.department || 'General';
-        if (req.user.role !== 'admin' && department !== req.user.department) {
+        let departments;
+        if (req.body.departments !== undefined) {
+            try {
+                departments = typeof req.body.departments === 'string' ?
+                    JSON.parse(req.body.departments) :
+                    req.body.departments;
+            } catch {
+                return rejectUpload(req, res, 400, 'قائمة الأقسام المحددة غير صالحة');
+            }
+
+            if (!Array.isArray(departments)) {
+                return rejectUpload(req, res, 400, 'قائمة الأقسام المحددة غير صالحة');
+            }
+        } else {
+            departments = [req.body.department || req.user.department || 'General'];
+        }
+
+        departments = [...new Set(departments.map((department) => String(department).trim()))];
+        if (departments.length === 0 || departments.some((department) => !department)) {
+            return rejectUpload(req, res, 400, 'اختر قسماً واحداً على الأقل للملف');
+        }
+
+        if (req.user.role !== 'admin' && departments.some((department) => department !== req.user.department)) {
             return rejectUpload(req, res, 403, 'لا يمكنك رفع ملف إلى قسم آخر');
         }
 
+        const department = departments[0];
         const accessMode = req.body.accessMode || 'department';
         if (!['department', 'users'].includes(accessMode)) {
             return rejectUpload(req, res, 400, 'نطاق مشاركة غير صالح');
@@ -56,7 +81,7 @@ exports.uploadFile = async(req, res) => {
 
             const matchedUsers = await User.find({
                 _id: { $in: uniqueUserIds },
-                department,
+                department: { $in: departments },
                 role: 'employee',
             }).select('_id');
 
@@ -78,6 +103,7 @@ exports.uploadFile = async(req, res) => {
             mimeType: req.file.mimetype,
             uploadedBy: req.user._id,
             department,
+            departments,
             accessMode,
             sharedWith,
         });
@@ -96,10 +122,19 @@ exports.uploadFile = async(req, res) => {
 exports.getFiles = async(req, res) => {
     try {
         const query = req.user.role === 'admin' ? {} : {
-            department: req.user.department,
-            $or: [
-                { accessMode: { $ne: 'users' } },
-                { sharedWith: req.user._id },
+            $and: [
+                {
+                    $or: [
+                        { departments: req.user.department },
+                        { department: req.user.department },
+                    ],
+                },
+                {
+                    $or: [
+                        { accessMode: { $ne: 'users' } },
+                        { sharedWith: req.user._id },
+                    ],
+                },
             ],
         };
 
